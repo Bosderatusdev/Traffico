@@ -1,0 +1,13 @@
+package com.transport.api.repository;
+
+import com.transport.api.model.Chauffeur;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+
+@Repository
+public interface ChauffeurRepository extends JpaRepository<Chauffeur, Long> {
+  //Trouver tous les chauffeurs d'une agence
+  List<Chauffeur> findByAgenceId(Long AgenceId);
+}

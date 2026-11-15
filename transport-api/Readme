@@ -1,0 +1,1102 @@
+# Traffico — API Backend (`transport-api`)
+
+> Réserver sa place dans un bus au Burundi, payer avec son mobile money, et recevoir un billet avec QR code — sans faire la queue au bureau de l'agence.
+
+Traffico est une plateforme de réservation de transport interurbain pensée pour le Burundi. Ce dépôt est la salle des machines : une API REST en **Spring Boot** qui parle à **PostgreSQL**, authentifie les utilisateurs, gère les trajets, les réservations et les paiements, et alimente trois interfaces : l'app Client, l'app Agence/Chauffeur et le dashboard Super Admin.
+
+C'est un projet développé en solo, en parallèle d'une licence en informatique (ISISL), sur une timeline de 10 mois. Ce README raconte à la fois **ce que fait le code** et **pourquoi il a été écrit comme ça**, parce que la plupart des choix ont une histoire derrière.
+
+---
+
+## Sommaire
+
+1. [Pourquoi Traffico existe](#1-pourquoi-traffico-existe)
+2. [L'écosystème en un coup d'œil](#2-lécosystème-en-un-coup-dœil)
+3. [Stack technique](#3-stack-technique)
+4. [Démarrage rapide](#4-démarrage-rapide)
+5. [Architecture du code](#5-architecture-du-code)
+6. [Modèle de données](#6-modèle-de-données)
+7. [Les décisions de conception qui comptent](#7-les-décisions-de-conception-qui-comptent)
+8. [Authentification et sécurité](#8-authentification-et-sécurité)
+9. [Référence de l'API](#9-référence-de-lapi)
+10. [Parcours complet en exemples](#10-parcours-complet-en-exemples)
+11. [Rôles et permissions](#11-rôles-et-permissions)
+12. [Tester en local (comptes de dev)](#12-tester-en-local-comptes-de-dev)
+13. [Dépannage](#13-dépannage)
+14. [Limites connues et durcissement avant production](#14-limites-connues-et-durcissement-avant-production)
+15. [Feuille de route](#15-feuille-de-route)
+16. [Ajouter une nouvelle ressource](#16-ajouter-une-nouvelle-ressource)
+
+---
+
+## 1. Pourquoi Traffico existe
+
+Au Burundi, réserver un bus interurbain veut souvent dire se déplacer jusqu'au bureau d'une agence, payer en espèces, et espérer qu'il restera de la place. Traffico cherche à simplifier ça, avec quelques contraintes très concrètes qui ont façonné l'API :
+
+- **Les places ne sont pas numérotées.** Dans les bus locaux, on s'assoit où on veut. L'API ne gère donc pas de sièges, seulement un **nombre de places**.
+- **Une maman peut voyager avec des enfants qui n'ont pas de téléphone.** Un seul compte doit pouvoir réserver plusieurs places, chacune avec **son propre QR code**, que l'on peut montrer à l'écran ou imprimer au secrétariat de l'agence.
+- **Le paiement passe par le mobile money** (Lumicash en premier, puis EcoCash, Smart Pesa, et peut-être BurundiPay, le système national de paiement instantané lancé en 2026).
+- **La connexion internet est inégale.** Les apps doivent rester légères, et l'API ne doit renvoyer que ce qui est utile.
+- **Le téléphone est universel, l'email ne l'est pas.** Le numéro de téléphone est donc l'identifiant principal ; l'email est optionnel.
+- **Plusieurs agences cohabitent sur la même plateforme.** Quand deux agences desservent la même ville, le client doit savoir précisément laquelle encaisse son paiement. Le nom d'une agence est donc **unique** en base.
+
+---
+
+## 2. L'écosystème en un coup d'œil
+
+Trois livrables, volontairement **séparés** (une seule app multi-rôles aurait alourdi le téléchargement, mélangé le public grand public et l'usage professionnel, et exposé le code métier des agences sur tous les téléphones) :
+
+| Livrable | Rôles | Technologie | Publication |
+|---|---|---|---|
+| **App Client** | `client` | Flutter (mobile) | Play Store |
+| **App Agence** | `admin_agence`, `chauffeur` | Flutter (mobile, interface selon le rôle) | Play Store, fiche séparée |
+| **Dashboard Super Admin** | `super_admin` | Web | Usage interne |
+
+Un package Dart partagé (`traffico_core` : thème, modèles, services API) est prévu pour éviter de dupliquer le code entre les deux apps Flutter.
+
+```mermaid
+flowchart LR
+    C[App Client<br/>Flutter] --> API
+    A[App Agence / Chauffeur<br/>Flutter] --> API
+    D[Dashboard Super Admin<br/>Web] --> API
+    API[transport-api<br/>Spring Boot :8081] --> DB[(PostgreSQL<br/>transport_burundi)]
+    API --> M[Gmail SMTP<br/>codes de vérification]
+    API -.futur.-> L[Lumicash / EcoCash<br/>paiement mobile]
+    API -.futur.-> S[Fournisseur SMS]
+```
+
+---
+
+## 3. Stack technique
+
+| Couche | Choix | Remarque |
+|---|---|---|
+| Langage | **Java 21** (LTS) | Verrouillé volontairement : Java 25 provoquait des plantages |
+| Framework | **Spring Boot 3.5.14** | Web, Data JPA, Security, Validation, Mail |
+| ORM | Hibernate 6.6.x | `ddl-auto=update` en développement |
+| Base de données | **PostgreSQL 18** | Base `transport_burundi` |
+| Authentification | JWT, **jjwt 0.12.6** | Signature HMAC |
+| Mots de passe | BCrypt | Jamais stockés ni renvoyés en clair |
+| Rate limiting | **Bucket4j** (`bucket4j_jdk17-core` 8.19.0) | En mémoire, par IP |
+| Email | Spring Mail + Gmail SMTP | Mot de passe d'application Gmail |
+| Confort | Lombok, HikariCP (par défaut) | |
+| Build | Maven (wrapper `./mvnw` fourni) | |
+| Environnement de dev | Kali Linux (zsh), VSCode, DBeaver, Postman | |
+
+---
+
+## 4. Démarrage rapide
+
+### Prérequis
+
+- JDK **21**
+- PostgreSQL **18** (service démarré)
+- Un compte Gmail avec un **mot de passe d'application** (pour l'envoi réel des codes par email ; sans lui, l'inscription avec email échouera à l'envoi)
+
+### Étapes
+
+**1. Cloner le dépôt**
+
+```bash
+git clone <url-du-depot>
+cd transport-api
+```
+
+**2. Créer la base**
+
+```sql
+CREATE DATABASE transport_burundi;
+```
+
+(Si PostgreSQL râle sur une version de collation de `template1`, voir le [dépannage](#13-dépannage).)
+
+**3. Créer `src/main/resources/application.properties`**
+
+Ce fichier contient des secrets : il est **exclu de Git** via `.gitignore`. Partez de ce modèle :
+
+```properties
+spring.application.name=transport-api
+server.port=8081
+
+# --- PostgreSQL ---
+spring.datasource.url=jdbc:postgresql://localhost:5432/transport_burundi
+spring.datasource.username=VOTRE_UTILISATEUR
+spring.datasource.password=VOTRE_MOT_DE_PASSE
+
+# --- JPA / Hibernate ---
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+
+# --- JWT ---
+# Clé secrète : au moins 32 caractères aléatoires, idéalement 64
+jwt.secret=REMPLACEZ_PAR_UNE_CLE_LONGUE_ET_ALEATOIRE
+# Durée de validité en millisecondes (157788000000 = 5 ans, révocable via token_version)
+jwt.expiration=157788000000
+
+# --- Gmail SMTP ---
+spring.mail.host=smtp.gmail.com
+spring.mail.port=587
+spring.mail.username=votre.adresse@gmail.com
+spring.mail.password=MOT_DE_PASSE_D_APPLICATION_16_CARACTERES
+spring.mail.properties.mail.smtp.auth=true
+spring.mail.properties.mail.smtp.starttls.enable=true
+```
+
+> 💡 En `.properties`, un commentaire doit être sur **sa propre ligne** : un `# ...` placé après une valeur fait partie de la valeur.
+
+> 💡 Le port est **8081** parce que le 8080 est souvent déjà pris (Docker, par exemple, sur la machine de dev).
+
+**4. Pointer `JAVA_HOME` sur Java 21** (zsh sous Kali, pas bash)
+
+```bash
+echo 'export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64' >> ~/.zshrc
+echo 'export PATH=$JAVA_HOME/bin:$PATH' >> ~/.zshrc
+source ~/.zshrc
+```
+
+**5. Lancer**
+
+```bash
+./mvnw spring-boot:run
+```
+
+Au premier démarrage, Hibernate crée les tables. Cherchez cette ligne dans les logs :
+
+```
+Started TransportApiApplication in 4.x seconds
+```
+
+**6. Vérifier**
+
+```bash
+curl -i http://localhost:8081/api/trajets/search?depart=Bujumbura\&arrivee=Gitega
+```
+
+Une réponse `200` avec `[]` suffit pour confirmer que tout est branché.
+
+### Commandes utiles
+
+```bash
+./mvnw clean install -DskipTests   # compiler et empaqueter
+./mvnw spring-boot:run             # lancer l'API
+./mvnw test                        # tests (pas encore de suite de tests écrite)
+```
+
+---
+
+## 5. Architecture du code
+
+```
+com.transport.api
+├── TransportApiApplication.java
+├── config/          SecurityConfig, CorsConfig
+├── security/        JwtUtil, JwtAuthFilter, RateLimitFilter, CustomUserDetailsService
+├── controller/      Auth, User, Agence, Chauffeur, Bus, Trajet,
+│                    Reservation, Paiement, Avis, Notification, Favoris
+├── service/         un service par ressource + VerificationService (OTP, emails, SMS simulé)
+├── repository/      interfaces Spring Data JPA
+├── model/           entités JPA
+└── dto/             objets d'entrée/sortie (RegisterRequest, ReservationRequest, ...)
+```
+
+Chaque ressource suit le même schéma en quatre fichiers, avec **une seule responsabilité chacun** :
+
+| Fichier | Rôle | En une phrase |
+|---|---|---|
+| **Model** | Décrit la table | Ce qu'est une réservation |
+| **Repository** | Parle à PostgreSQL | Où la ranger et comment la retrouver |
+| **Service** | Porte les règles métier | Ce qu'on fait avant de la sauvegarder |
+| **Controller** | Expose l'HTTP | Comment le monde extérieur la demande |
+
+```
+Requête HTTP → Controller → Service → Repository → PostgreSQL
+                  ↑ DTO d'entrée          ↓ entité / DTO de sortie
+```
+
+**Règle d'or :** dès qu'un endpoint d'écriture reçoit des données d'un client, on passe par un **DTO** qui ne contient que les champs que le client a le droit de fournir. Le statut d'une réservation, l'identifiant de l'utilisateur ou le code QR ne viennent **jamais** du client.
+
+---
+
+## 6. Modèle de données
+
+11 tables. Le schéma est géré par Hibernate (`ddl-auto=update`) en développement.
+
+```mermaid
+erDiagram
+    AGENCES ||--o{ USERS : emploie
+    AGENCES ||--o{ CHAUFFEURS : emploie
+    AGENCES ||--o{ BUS : possede
+    AGENCES ||--o{ TRAJETS : propose
+    AGENCES ||--o{ AVIS : recoit
+    AGENCES ||--o{ FAVORIS : cible
+    BUS ||--o{ TRAJETS : utilise
+    USERS ||--o| CHAUFFEURS : "compte lie"
+    TRAJETS ||--o{ TRAJET_CHAUFFEUR : assigne
+    CHAUFFEURS ||--o{ TRAJET_CHAUFFEUR : conduit
+    TRAJETS ||--o{ RESERVATIONS : concerne
+    USERS ||--o{ RESERVATIONS : reserve
+    USERS ||--o{ AVIS : laisse
+    USERS ||--o{ NOTIFICATIONS : recoit
+    USERS ||--o{ FAVORIS : enregistre
+    PAIEMENTS ||..o{ RESERVATIONS : "groupe_id"
+
+    AGENCES {
+        int id PK
+        string nom UK
+        string telephone
+        string email
+        string logo_url
+        string statut
+        decimal commission
+        timestamp created_at
+    }
+    USERS {
+        int id PK
+        string nom
+        string prenom
+        string email UK
+        string telephone UK
+        string mot_de_passe
+        string role
+        int agence_id FK
+        boolean email_verifie
+        boolean telephone_verifie
+        int token_version
+        timestamp created_at
+    }
+    CHAUFFEURS {
+        int id PK
+        int agence_id FK
+        int user_id FK
+        string nom
+        string telephone
+        string numero_permis
+        string statut
+    }
+    BUS {
+        int id PK
+        int agence_id FK
+        string numero
+        int capacite
+        string type
+        string statut
+    }
+    TRAJETS {
+        int id PK
+        int agence_id FK
+        int bus_id FK
+        string ville_depart
+        string ville_arrivee
+        timestamp heure_depart
+        timestamp heure_arrivee
+        decimal tarif
+        int places_disponibles
+        string statut
+    }
+    TRAJET_CHAUFFEUR {
+        int id PK
+        int trajet_id FK
+        int chauffeur_id FK
+    }
+    RESERVATIONS {
+        int id PK
+        int user_id FK
+        int trajet_id FK
+        string numero_siege
+        string statut
+        string qr_code
+        string groupe_id
+        timestamp created_at
+    }
+    PAIEMENTS {
+        int id PK
+        int reservation_id FK
+        string groupe_id
+        decimal montant
+        string methode
+        string transaction_id
+        string statut
+        timestamp created_at
+    }
+    AVIS {
+        int id PK
+        int user_id FK
+        int agence_id FK
+        int note
+        string commentaire
+        timestamp created_at
+    }
+    NOTIFICATIONS {
+        int id PK
+        int user_id FK
+        string titre
+        string message
+        boolean lu
+        timestamp created_at
+    }
+    FAVORIS {
+        int id PK
+        int user_id FK
+        string type
+        int agence_id FK
+        string ville_depart
+        string ville_arrivee
+        timestamp created_at
+    }
+```
+
+### Points d'attention
+
+- **`reservations.groupe_id`** regroupe toutes les places d'un même achat (une maman et ses deux enfants = trois lignes, un `groupe_id`).
+- **`paiements.groupe_id`** : un seul paiement couvre tout le groupe. La colonne `reservation_id` est conservée par compatibilité historique, mais n'est plus le lien principal.
+- **`numero_siege`** ne contient plus un vrai siège mais un libellé d'ordre : `Place 1/3`, `Place 2/3`, `Place 3/3`.
+- **`chauffeurs.user_id`** relie une fiche chauffeur à son compte de connexion (un utilisateur ne peut être lié qu'à une seule fiche).
+- **`users.token_version`** sert à révoquer les tokens JWT (voir [section 8](#8-authentification-et-sécurité)).
+- **`users`** porte aussi les colonnes des codes de vérification, de réinitialisation de mot de passe et du flux de changement d'email/téléphone (nouvel identifiant en attente, code de confirmation, expiration).
+- **`favoris`** : deux types, `agence` (avec `agence_id`) ou `trajet` (avec une paire de villes, jamais un `trajet_id` précis qui deviendrait obsolète après la date de départ). Des index uniques partiels empêchent les doublons.
+
+<details>
+<summary><strong>Schéma SQL de référence (cliquer pour déplier)</strong></summary>
+
+```sql
+-- 1. Agences (nom unique : un client doit toujours savoir quelle agence encaisse)
+CREATE TABLE agences (
+    id SERIAL PRIMARY KEY,
+    nom VARCHAR(200) NOT NULL UNIQUE,
+    telephone VARCHAR(20),
+    email VARCHAR(150),
+    logo_url TEXT,
+    statut VARCHAR(20) DEFAULT 'en_attente',
+    commission DECIMAL(5,2) DEFAULT 5.00,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 2. Users
+CREATE TABLE users (
+    id                              SERIAL PRIMARY KEY,
+    nom                             VARCHAR(100) NOT NULL,
+    prenom                          VARCHAR(100),
+    email                           VARCHAR(150) UNIQUE,
+    telephone                       VARCHAR(20) UNIQUE NOT NULL,
+    mot_de_passe                    VARCHAR(255),
+    role                            VARCHAR(20) DEFAULT 'client',  -- client | chauffeur | admin_agence | super_admin
+    agence_id                       INTEGER REFERENCES agences(id),
+
+    -- Vérification du compte (inscription)
+    email_verifie                   BOOLEAN DEFAULT FALSE,
+    telephone_verifie               BOOLEAN DEFAULT FALSE,
+    code_verification_email         VARCHAR(255),
+    code_verification_telephone     VARCHAR(255),
+    code_expiration                 TIMESTAMP,
+
+    -- Réinitialisation de mot de passe
+    code_reset_password             VARCHAR(6),
+    code_reset_expiration           TIMESTAMP,
+
+    -- Révocation de session (déconnexion forcée / tokens longue durée)
+    token_version                   INTEGER DEFAULT 1,
+
+    -- + colonnes du flux "changement d'email / de téléphone"
+    --   (voir l'entité User.java pour la liste exacte)
+
+    created_at                      TIMESTAMP DEFAULT NOW()
+);
+
+-- 3. Chauffeurs (liés à un compte user pour se connecter à l'app Agence)
+CREATE TABLE chauffeurs (
+    id SERIAL PRIMARY KEY,
+    agence_id INTEGER REFERENCES agences(id),
+    user_id INTEGER REFERENCES users(id),
+    nom VARCHAR(100) NOT NULL,
+    prenom VARCHAR(100),
+    telephone VARCHAR(20),
+    numero_permis VARCHAR(50),
+    statut VARCHAR(20) DEFAULT 'actif',
+    CONSTRAINT uq_chauffeurs_user_id UNIQUE (user_id)
+);
+
+-- 4. Bus
+CREATE TABLE bus (
+    id SERIAL PRIMARY KEY,
+    agence_id INTEGER REFERENCES agences(id),
+    numero VARCHAR(50),
+    capacite INTEGER NOT NULL,
+    type VARCHAR(50),
+    statut VARCHAR(20) DEFAULT 'actif'
+);
+
+-- 5. Trajets
+CREATE TABLE trajets (
+    id SERIAL PRIMARY KEY,
+    agence_id INTEGER REFERENCES agences(id),
+    bus_id INTEGER REFERENCES bus(id),
+    ville_depart VARCHAR(100) NOT NULL,
+    ville_arrivee VARCHAR(100) NOT NULL,
+    heure_depart TIMESTAMP NOT NULL,
+    heure_arrivee TIMESTAMP,
+    tarif DECIMAL(10,2) NOT NULL,
+    places_disponibles INTEGER,
+    statut VARCHAR(20) DEFAULT 'actif'
+);
+
+-- 6. Trajet_Chauffeur (table de liaison)
+CREATE TABLE trajet_chauffeur (
+    id SERIAL PRIMARY KEY,
+    trajet_id INTEGER REFERENCES trajets(id),
+    chauffeur_id INTEGER REFERENCES chauffeurs(id)
+);
+
+-- 7. Reservations (une ligne par place ; groupe_id relie les places d'un même achat)
+CREATE TABLE reservations (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    trajet_id INTEGER REFERENCES trajets(id),
+    numero_siege VARCHAR(10),
+    statut VARCHAR(20) DEFAULT 'en_attente',
+    qr_code TEXT,
+    groupe_id VARCHAR(36),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 8. Paiements (un paiement par groupe ; reservation_id conservé pour compatibilité)
+CREATE TABLE paiements (
+    id SERIAL PRIMARY KEY,
+    reservation_id INTEGER REFERENCES reservations(id),
+    groupe_id VARCHAR(36),
+    montant DECIMAL(10,2) NOT NULL,
+    methode VARCHAR(50) DEFAULT 'lumicash',
+    transaction_id VARCHAR(200),
+    statut VARCHAR(20) DEFAULT 'en_attente',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 9. Avis
+CREATE TABLE avis (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    agence_id INTEGER REFERENCES agences(id),
+    note INTEGER CHECK (note BETWEEN 1 AND 5),
+    commentaire TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 10. Notifications
+CREATE TABLE notifications (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    titre VARCHAR(200),
+    message TEXT,
+    lu BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 11. Favoris
+CREATE TABLE favoris (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type VARCHAR(20) NOT NULL CHECK (type IN ('agence', 'trajet')),
+    agence_id INTEGER REFERENCES agences(id) ON DELETE CASCADE,
+    ville_depart VARCHAR(100),
+    ville_arrivee VARCHAR(100),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Empêche d'ajouter deux fois la même agence en favori
+CREATE UNIQUE INDEX favoris_agence_unique
+    ON favoris (user_id, agence_id)
+    WHERE type = 'agence';
+
+-- Empêche d'ajouter deux fois le même trajet (paire de villes) en favori
+CREATE UNIQUE INDEX favoris_trajet_unique
+    ON favoris (user_id, ville_depart, ville_arrivee)
+    WHERE type = 'trajet';
+```
+
+</details>
+
+---
+
+## 7. Les décisions de conception qui comptent
+
+### Réserver sans sièges numérotés
+
+`POST /api/reservations` reçoit un `trajetId` et un `nombrePlaces`. Le serveur crée **autant de lignes `Reservation`** que de places, toutes liées par un même `groupeId` (UUID), chacune avec son **propre `qrCode`**. Avant de créer quoi que ce soit, il vérifie qu'il reste assez de places (`Places insuffisantes sur ce trajet` sinon).
+
+### Un paiement pour tout le groupe
+
+Le client paie une seule fois pour l'ensemble de ses places. Le `Paiement` référence le `groupeId`, pas une réservation unique. Avant d'accepter un paiement, le serveur vérifie que **toutes** les réservations du groupe appartiennent bien à l'utilisateur connecté.
+
+### Ce qui se passe à la confirmation du paiement
+
+Quand un paiement passe à `reussi` (`PUT /api/paiements/{id}/confirmer`), le serveur, en une seule opération :
+
+1. marque le paiement `reussi` ;
+2. passe toutes les réservations du groupe à `confirmee` ;
+3. **décrémente `placesDisponibles`** du trajet du nombre de places payées ;
+4. crée les notifications : **1 notification générale** « Paiement confirmé », puis **par place** une notification « Billet » (détails du trajet) et une notification « QR Code » ;
+5. renvoie un `PaiementConfirmationResponse` qui contient déjà tout ce qu'il faut pour l'écran de confirmation (trajet, agence, nombre de places, liste des QR codes), sans second appel.
+
+La confirmation est **idempotente** : confirmer deux fois le même paiement ne décrémente pas les places deux fois.
+
+```mermaid
+sequenceDiagram
+    participant App as App Client
+    participant API as transport-api
+    participant DB as PostgreSQL
+    participant Op as Opérateur mobile money (futur)
+
+    App->>API: POST /api/reservations {trajetId, nombrePlaces: 3}
+    API->>DB: 3 réservations (en_attente), même groupeId, 3 qrCode
+    API-->>App: liste de 3 réservations
+    App->>API: POST /api/paiements {groupeId, montant, methode}
+    API->>DB: paiement (en_attente)
+    API-->>App: paiement créé
+    Op-->>API: confirmation de paiement (webhook, à venir)
+    API->>DB: paiement reussi, réservations confirmee, places -3
+    API->>DB: notifications (1 générale + 3 billets + 3 QR)
+    API-->>App: résumé complet + qrCodes
+```
+
+### Le QR code
+
+Chaque réservation porte un `qrCode` (UUID) généré côté serveur. Côté app, le QR affiché encode le **texte lisible du billet** (lisible avec n'importe quelle app de scan), et l'app de contrôle **extrait le code** puis interroge `GET /api/reservations/qr/{qrCode}` pour récupérer des données **fraîches** depuis la base, plutôt que de se fier au texte imprimé. Un billet expire 24 h après le départ.
+
+### Chauffeurs : un compte + une fiche, créés ensemble
+
+Il n'y a pas d'auto-inscription pour les chauffeurs. Un `admin_agence` (ou un `super_admin`) appelle `POST /api/chauffeurs`, et le serveur crée **dans la même opération** un `User` (`role = chauffeur`, rattaché à l'agence, téléphone marqué vérifié) et la fiche `Chauffeur` liée à ce compte. L'agence est toujours celle de l'admin connecté, jamais celle fournie dans le body (sauf pour un `super_admin`, qui doit la préciser).
+
+### Autres choix à connaître
+
+- **Téléphone toujours stocké avec le `+` et l'indicatif** (`+25765555555`). Ne jamais retirer le `+` avant l'envoi.
+- **`userId` envoyé en string** dans les endpoints `verify-*` et `resend-code` (`"4"`, pas `4`).
+- **Suppression de compte = anonymisation**, pas suppression physique, pour ne pas casser l'intégrité des réservations et paiements historiques. C'est un `POST /api/users/{id}/delete-self` avec le mot de passe dans le body (certains clients HTTP n'envoient pas fiablement un body sur `DELETE`).
+- **Notifications** : purge automatique après 30 jours (tâche `@Scheduled`) et endpoint de **broadcast** (tous les utilisateurs, ou un groupe ciblé).
+- **Recherche de trajets publique** : un visiteur sans compte peut consulter, mais réserver et payer exigent un compte connecté.
+- **Un favori « trajet » est une paire de villes**, jamais un `trajet_id`.
+
+---
+
+## 8. Authentification et sécurité
+
+### Inscription et vérification (OTP double canal)
+
+1. `POST /api/auth/register` : nom, prénom, téléphone (obligatoire), email (optionnel), mot de passe. Le mot de passe est haché en BCrypt.
+2. Le serveur envoie un **code à 6 chiffres** (généré avec `SecureRandom`) :
+   - par **email** : réellement envoyé via Gmail SMTP ;
+   - par **téléphone** : **simulé** pour l'instant, le code s'affiche dans les logs du serveur (un fournisseur SMS sera branché plus tard).
+3. `POST /api/auth/verify-phone` et `POST /api/auth/verify-email` valident les codes (10 minutes de validité).
+4. `POST /api/auth/resend-code` en génère un nouveau (l'ancien est écrasé, donc invalidé).
+
+> ℹ️ Le backend **n'empêche pas** la connexion d'un compte non vérifié : il renvoie `telephoneVerifie` et `emailVerifie` au login, et c'est l'app qui impose la vérification. Voir la [section 14](#14-limites-connues-et-durcissement-avant-production).
+
+### Connexion et JWT
+
+- `POST /api/auth/login` avec un champ `identifiant` qui accepte **indifféremment le téléphone ou l'email**.
+- Le token JWT contient : `sub` (téléphone), `role`, `tokenVersion`. Il est valable **5 ans** (choix produit : rester connecté, comme dans beaucoup d'apps non critiques).
+- Chaque requête passe par `JwtAuthFilter`, qui vérifie la signature, l'expiration **et** que `tokenVersion` correspond à celle stockée en base.
+- **Révocation** : incrémenter `users.token_version` invalide instantanément tous les anciens tokens de cet utilisateur. Cela se produit automatiquement après un `reset-password`, et à la demande avec `POST /api/auth/logout-all-devices` (« déconnecter tous mes appareils »). C'est ce qui rend raisonnable une durée de vie aussi longue.
+- Les sessions sont **stateless** et le CSRF est désactivé (API par token, sans cookie de session).
+
+### Mot de passe oublié
+
+- `POST /api/auth/forgot-password` envoie un code par email (si l'identifiant fourni est un email) ou par SMS simulé (sinon). La réponse est **toujours générique** (`Si ce compte existe, un code a été envoyé.`) pour ne pas révéler quels comptes existent.
+- `POST /api/auth/reset-password` vérifie le code, change le mot de passe, **invalide le code** (usage unique) et incrémente `token_version`.
+- Les codes de réinitialisation sont stockés dans des colonnes **séparées** (`code_reset_password`, `code_reset_expiration`) de celles de la vérification de compte, pour qu'une réinitialisation ne puisse jamais « dé-vérifier » un compte.
+
+### Rate limiting
+
+Un `RateLimitFilter` (Bucket4j, en mémoire, **un compteur par adresse IP**) protège ces routes contre la force brute :
+
+`/api/auth/login`, `/verify-phone`, `/verify-email`, `/forgot-password`, `/reset-password`, `/resend-code`
+
+Capacité de **5 tentatives**, puis recharge progressive (5 jetons répartis sur 2 minutes). Au-delà : `429 Too Many Requests` avec `{"error": "Trop de tentatives. Réessayez dans quelques minutes."}`.
+
+### Autorisation
+
+- **Par rôle**, dans `SecurityConfig` (`hasRole` / `hasAnyRole`) : voir la [matrice](#11-rôles-et-permissions).
+- **Par propriété de la ressource** (anti-IDOR), dans les controllers : chaque controller sensible utilise deux petits utilitaires, `getUserConnecte()` (retrouve l'utilisateur depuis le token) et `estAdmin()`. Règle : *c'est ta ressource, ou tu es admin*.
+- **L'identité vient toujours du token, jamais du body.** Exemple : `userId` n'existe pas dans `ReservationRequest`.
+- **Aucun statut imposé par le client** : `statut` est forcé par le serveur à la création d'une réservation (`en_attente`) ou d'un paiement (`en_attente`).
+
+### Validation des entrées
+
+Jakarta Validation sur les DTOs, activée par `@Valid` dans les controllers :
+
+| DTO | Règles principales |
+|---|---|
+| `RegisterRequest` | nom, prénom, téléphone, mot de passe obligatoires ; téléphone `^\+?[0-9]{8,15}$` ; email valide si fourni ; mot de passe ≥ 6 caractères |
+| `LoginRequest` | identifiant et mot de passe obligatoires |
+| `ReservationRequest` | `trajetId` obligatoire ; `nombrePlaces` ≥ 1 (défaut 1) |
+| `PaiementRequest` | `groupeId` obligatoire ; `montant` positif |
+| `CreateChauffeurRequest` | nom, téléphone (même regex), mot de passe initial ≥ 6 caractères |
+
+### Divers
+
+- `motDePasse` est annoté `@JsonIgnore` : le hash ne sort jamais dans une réponse.
+- **CORS** ouvert en développement (`allowedOriginPatterns("*")`), à restreindre avant la production.
+- `application.properties` n'est jamais versionné.
+
+---
+
+## 9. Référence de l'API
+
+URL de base en local : `http://localhost:8081` (`http://10.0.2.2:8081` depuis l'émulateur Android).
+
+**Authentification des requêtes protégées** : en-tête `Authorization: Bearer <token>`.
+
+**Légende de la colonne « Accès »**
+
+| Valeur | Signification |
+|---|---|
+| Public | Aucun token requis |
+| Connecté | Token valide, n'importe quel rôle |
+| Propriétaire ou admin | Sa propre ressource, ou `admin_agence` / `super_admin` |
+| Admin agence+ | `admin_agence` ou `super_admin` |
+| Super admin | `super_admin` uniquement |
+| ⚠ | Fonctionne, mais à verrouiller avant la production ([section 14](#14-limites-connues-et-durcissement-avant-production)) |
+
+### Auth — `/api/auth`
+
+| Méthode | Chemin | Accès | Rôle |
+|---|---|---|---|
+| POST | `/register` | Public | Crée un compte `client` et envoie les codes |
+| POST | `/verify-phone` | Public (limité) | Valide le code SMS |
+| POST | `/verify-email` | Public (limité) | Valide le code email |
+| POST | `/resend-code` | Public (limité) | Renvoie un code (`type` : `phone` ou `email`) |
+| POST | `/login` | Public (limité) | Renvoie le JWT |
+| POST | `/forgot-password` | Public (limité) | Envoie un code de réinitialisation |
+| POST | `/reset-password` | Public (limité) | Change le mot de passe avec le code |
+| POST | `/logout-all-devices` | Connecté ⚠ | Invalide tous les tokens de l'utilisateur |
+
+### Users — `/api/users`
+
+| Méthode | Chemin | Accès | Rôle |
+|---|---|---|---|
+| GET | `/` | Admin agence+ | Liste des utilisateurs |
+| GET | `/{id}` | Propriétaire ou admin | Fiche utilisateur |
+| PUT | `/{id}` | Propriétaire ou admin | Modifie nom et prénom uniquement (le rôle ne peut pas être modifié par ce biais) |
+| DELETE | `/{id}` | Super admin | Suppression |
+| POST | `/{id}/change-email/request` · `/confirm` | Propriétaire | Changement d'email avec code envoyé au **nouvel** email |
+| POST | `/{id}/change-telephone/request` · `/confirm` | Propriétaire | Même principe pour le téléphone |
+| POST | `/{id}/delete-self` | Propriétaire | Anonymise le compte (body : `motDePasse`) |
+| POST | `/` | Connecté ⚠ | Création directe d'un user (héritage, à retirer ou réserver au super admin) |
+
+### Agences — `/api/agences`
+
+| Méthode | Chemin | Accès |
+|---|---|---|
+| GET | `/`, `/{id}` | Connecté |
+| POST, PUT, DELETE | `/`, `/{id}` | Super admin |
+
+### Chauffeurs — `/api/chauffeurs`
+
+| Méthode | Chemin | Accès | Rôle |
+|---|---|---|---|
+| GET | `/`, `/{id}`, `/agence/{agenceId}` | Connecté | Lecture |
+| POST | `/` | Admin agence+ | Crée le compte User **et** la fiche Chauffeur |
+| PUT, DELETE | `/{id}` | Admin agence+ ⚠ | Modification / suppression |
+
+### Bus — `/api/bus`
+
+| Méthode | Chemin | Accès |
+|---|---|---|
+| GET | `/`, `/{id}`, `/agence/{agenceId}` | Connecté |
+| POST, PUT, DELETE | `/`, `/{id}` | Admin agence+ ⚠ |
+
+### Trajets — `/api/trajets`
+
+| Méthode | Chemin | Accès | Rôle |
+|---|---|---|---|
+| GET | `/search?depart=…&arrivee=…` | **Public** | Recherche par villes (insensible à la casse) |
+| GET | `/`, `/{id}` | Public † | Liste et détail |
+| GET | `/agence/{agenceId}` | Connecté | Trajets d'une agence |
+| POST, PUT, DELETE | `/`, `/{id}` | Admin agence+ ⚠ | Gestion des trajets |
+
+† Choix produit : consultation sans compte. Cette ouverture dépend des `requestMatchers(...).permitAll()` de `SecurityConfig`, à vérifier.
+
+> Il n'y a pas de paramètre de date côté API : le filtrage par date (jour choisi ou 7 prochains jours) est fait par l'app.
+
+### Réservations — `/api/reservations`
+
+| Méthode | Chemin | Accès | Rôle |
+|---|---|---|---|
+| POST | `/` | Connecté | Crée N réservations liées (`trajetId`, `nombrePlaces`) |
+| GET | `/{id}` | Propriétaire ou admin | Détail |
+| GET | `/user/{userId}` | Propriétaire ou admin | « Mes réservations » |
+| GET | `/trajet/{trajetId}` | Admin agence+ | Liste des passagers d'un trajet |
+| GET | `/` | Admin agence+ | Toutes les réservations |
+| PUT, DELETE | `/{id}` | Connecté ⚠ | À restreindre |
+| GET | `/qr/{qrCode}` | *(prévu)* | Scan d'un billet par le chauffeur / l'agence |
+
+### Paiements — `/api/paiements`
+
+| Méthode | Chemin | Accès | Rôle |
+|---|---|---|---|
+| POST | `/` | Connecté | Crée un paiement pour un `groupeId` (doit appartenir à l'utilisateur) |
+| PUT | `/{id}/confirmer` | Connecté ⚠ | Confirme le paiement et déclenche places, statuts, notifications |
+| GET | `/{id}` | Propriétaire ou admin | Détail |
+| GET | `/groupe/{groupeId}` | Propriétaire ou admin | Paiement d'un groupe |
+| GET | `/` | Admin agence+ | Tous les paiements |
+| DELETE | `/{id}` | Connecté ⚠ | À restreindre |
+
+### Avis — `/api/avis`
+
+| Méthode | Chemin | Accès |
+|---|---|---|
+| GET | `/`, `/{id}`, `/agence/{agenceId}`, `/user/{userId}` | Connecté |
+| POST, PUT, DELETE | `/`, `/{id}` | Connecté ⚠ |
+
+### Notifications — `/api/notifications`
+
+| Méthode | Chemin | Accès | Rôle |
+|---|---|---|---|
+| GET | `/user/{userId}` | Propriétaire ou admin | Boîte de réception |
+| GET | `/user/{userId}/unread` | Propriétaire ou admin | Non lues |
+| GET | `/{id}` | Propriétaire ou admin | Détail |
+| GET | `/` | Admin agence+ | Toutes |
+| PUT | `/{id}/read` | Propriétaire | Marque comme lue |
+| POST | `/broadcast` | Admin agence+ | Diffusion : à tous (`tousLesUsers`) ou à une liste (`userIds`). Un admin d'agence n'atteint que ses propres clients |
+| POST, DELETE | `/`, `/{id}` | Connecté ⚠ | Création directe / suppression, à restreindre |
+
+### Favoris — `/api/favoris`
+
+Ajout, liste et suppression de favoris de type `agence` ou `trajet` (paire de villes). Les doublons sont refusés par les index uniques de la base. Le détail des chemins est dans `FavorisController`.
+
+### Format des erreurs
+
+| Code | Cas typique | Corps |
+|---|---|---|
+| `400` | Validation, code OTP invalide, règle métier | `{"error": "…"}` ou erreurs de validation |
+| `401` | Mauvais identifiants au login | `{"error": "Mot de passe incorrect"}` |
+| `403` | Pas de token, token expiré/révoqué, ou accès à la ressource d'autrui | `{"error": "…"}` ou corps vide |
+| `429` | Trop de tentatives sur une route limitée | `{"error": "Trop de tentatives. …"}` |
+| `500` | Exception non gérée (ex. `Places insuffisantes sur ce trajet`) | JSON Spring standard, le texte utile est dans `message` |
+
+---
+
+## 10. Parcours complet en exemples
+
+Les exemples utilisent `curl` ; remplacez `$TOKEN` par le token reçu au login.
+
+### 1. Inscription
+
+```bash
+curl -X POST http://localhost:8081/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nom": "Uwimana",
+    "prenom": "Marie",
+    "telephone": "+25763333333",
+    "email": "marie@example.com",
+    "motDePasse": "motdepasse123"
+  }'
+```
+
+```json
+{
+  "userId": 5,
+  "message": "Inscription réussie ! Un code de vérification a été envoyé par SMS et par email."
+}
+```
+
+### 2. Vérification du téléphone
+
+Le code apparaît dans les logs du serveur (SMS simulé). Notez `userId` **en string** :
+
+```bash
+curl -X POST http://localhost:8081/api/auth/verify-phone \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "5", "code": "667423"}'
+```
+
+```json
+{ "message": "Numéro de téléphone vérifié avec succès !" }
+```
+
+### 3. Connexion
+
+```bash
+curl -X POST http://localhost:8081/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"identifiant": "+25763333333", "motDePasse": "motdepasse123"}'
+```
+
+```json
+{
+  "token": "eyJhbGciOiJIUzM4NCJ9...",
+  "userId": 5,
+  "nom": "Uwimana",
+  "role": "client",
+  "telephoneVerifie": true,
+  "emailVerifie": false
+}
+```
+
+### 4. Recherche de trajets (publique)
+
+```bash
+curl "http://localhost:8081/api/trajets/search?depart=Bujumbura&arrivee=Gitega"
+```
+
+```json
+[
+  {
+    "id": 6,
+    "agence": { "id": 7, "nom": "Agence Star Transport" },
+    "villeDepart": "Bujumbura",
+    "villeArrivee": "Gitega",
+    "heureDepart": "2026-09-08T09:00:00",
+    "heureArrivee": "2026-09-08T12:00:00",
+    "tarif": 15000.0,
+    "placesDisponibles": 45,
+    "statut": "actif"
+  }
+]
+```
+
+### 5. Réserver 3 places (une maman et deux enfants)
+
+```bash
+curl -X POST http://localhost:8081/api/reservations \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"trajetId": 6, "nombrePlaces": 3}'
+```
+
+Réponse : un **tableau de 3 réservations**, même `groupeId`, `qrCode` différents (extrait) :
+
+```json
+[
+  {
+    "id": 12,
+    "numeroSiege": "Place 1/3",
+    "statut": "en_attente",
+    "qrCode": "6e9c2a7a-275a-4f19-b7c3-94d623f71f90",
+    "groupeId": "b1f0c9e2-…",
+    "createdAt": "2026-09-08T11:44:37"
+  }
+]
+```
+
+Si `nombrePlaces` dépasse les places restantes : erreur `Places insuffisantes sur ce trajet`.
+
+### 6. Payer
+
+```bash
+curl -X POST http://localhost:8081/api/paiements \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"groupeId": "b1f0c9e2-…", "montant": 45000, "methode": "lumicash"}'
+```
+
+```json
+{
+  "id": 7,
+  "groupeId": "b1f0c9e2-…",
+  "montant": 45000.0,
+  "methode": "lumicash",
+  "transactionId": null,
+  "statut": "en_attente"
+}
+```
+
+### 7. Confirmer le paiement (simulation de l'opérateur)
+
+```bash
+curl -X PUT http://localhost:8081/api/paiements/7/confirmer \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "paiementId": 7,
+  "statut": "reussi",
+  "montant": 45000.0,
+  "methode": "lumicash",
+  "villeDepart": "Bujumbura",
+  "villeArrivee": "Gitega",
+  "heureDepart": "2026-09-08T09:00",
+  "nomAgence": "Agence Star Transport",
+  "nombrePlaces": 3,
+  "qrCodes": [
+    "6e9c2a7a-275a-4f19-b7c3-94d623f71f90",
+    "8c60eed7-6c39-41d4-95dd-c7adfe0cb0d8",
+    "…"
+  ]
+}
+```
+
+Effets de bord : `placesDisponibles` du trajet baisse de 3, les 3 réservations passent à `confirmee`, et **7 notifications** apparaissent (1 générale + 3 billets + 3 QR codes).
+
+### 8. Créer un chauffeur (par un admin d'agence)
+
+```bash
+curl -X POST http://localhost:8081/api/chauffeurs \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "nom": "Ndikumana",
+    "prenom": "Pierre",
+    "telephone": "+25768888888",
+    "motDePasse": "chauffeur123",
+    "numeroPermis": "BDI-2026-042"
+  }'
+```
+
+Crée le compte (`role = chauffeur`, agence de l'admin) **et** la fiche liée.
+
+---
+
+## 11. Rôles et permissions
+
+Les rôles sont des valeurs de `users.role` ; Spring Security les transforme en autorités `ROLE_<RÔLE_EN_MAJUSCULES>`.
+
+| Ressource / action | `client` | `chauffeur` | `admin_agence` | `super_admin` |
+|---|:-:|:-:|:-:|:-:|
+| Rechercher / consulter des trajets | ✅ | ✅ | ✅ | ✅ |
+| Réserver, payer, laisser un avis | ✅ (pour soi) | ✅ | ✅ | ✅ |
+| Voir ses propres réservations, paiements, notifications | ✅ | ✅ | ✅ | ✅ |
+| Voir les réservations / paiements de tous | ❌ | ❌ | ✅ | ✅ |
+| Créer / modifier bus, trajets, chauffeurs | ❌ | ❌ | ✅ | ✅ |
+| Créer / modifier / supprimer des agences | ❌ | ❌ | ❌ | ✅ |
+| Supprimer un utilisateur | ❌ | ❌ | ❌ | ✅ |
+| Diffuser une notification | ❌ | ❌ | ✅ (ses clients) | ✅ (tous) |
+| Scanner un billet *(prévu)* | ❌ | ✅ (ses trajets) | ✅ (son agence) | ✅ |
+
+Les comptes `admin_agence` et `chauffeur` sont **créés par un administrateur**, jamais par auto-inscription. Une agence peut avoir plusieurs admins.
+
+---
+
+## 12. Tester en local (comptes de dev)
+
+Il n'existe pas (volontairement) d'endpoint public pour créer un administrateur. Pour obtenir des comptes de test :
+
+**1. Créer une agence**
+
+```sql
+INSERT INTO agences (nom, telephone, email, statut, commission)
+VALUES ('Agence Test Transport', '+25761111111', 'agence@test.bi', 'actif', 5.00)
+RETURNING id;
+```
+
+**2. Inscrire un utilisateur normalement** (`POST /api/auth/register`), puis le promouvoir :
+
+```sql
+UPDATE users
+SET role = 'admin_agence',
+    agence_id = <ID_DE_L_AGENCE>,
+    telephone_verifie = true,
+    email_verifie = true
+WHERE telephone = '+25767777777';
+```
+
+Pour un `super_admin`, même principe avec `role = 'super_admin'` (sans `agence_id`).
+
+**3. Se connecter** avec ce compte pour obtenir un token d'admin, puis créer des trajets, des chauffeurs, etc.
+
+> ⚠️ À réserver au développement local. Ne mettez jamais de vrais identifiants dans le dépôt.
+
+---
+
+## 13. Dépannage
+
+Les problèmes ci-dessous ont tous été rencontrés pendant le développement.
+
+| Symptôme | Cause | Solution |
+|---|---|---|
+| `JAVA_HOME environment variable is not defined correctly` | Variable absente ou pointant vers une version supprimée | Exporter `JAVA_HOME` vers Java 21 dans `~/.zshrc` (Kali utilise **zsh**, pas bash), puis `source ~/.zshrc` |
+| `Port 8080 was already in use` | Un autre service (Docker, ici) occupe le port | `server.port=8081` |
+| `template database "template1" has a collation version mismatch` | Version de la bibliothèque de collation du système changée | En superutilisateur : `ALTER DATABASE template1 REFRESH COLLATION VERSION;` puis `CREATE DATABASE …` |
+| Mot de passe `postgres` oublié | | Passer temporairement l'authentification locale en `trust` dans `pg_hba.conf`, redémarrer, `ALTER USER postgres PASSWORD '…'`, **puis remettre `md5`** et redémarrer |
+| `403` sur toutes les routes protégées | Token expiré, révoqué (`token_version`) ou absent | Se reconnecter. Dans cette configuration, un token invalide donne un `403`, pas un `401` |
+| Un endpoint tout neuf renvoie l'ancien comportement | Ancien processus encore en cours | **Arrêt complet** (`Ctrl+C`) puis `./mvnw spring-boot:run` ; le rechargement à chaud n'est pas fiable pour les nouveaux endpoints |
+| `Could not resolve root entity 'X'` au démarrage | `@Entity(name = "x")` renomme l'**entité** pour HQL au lieu de nommer la table | Utiliser `@Entity` + `@Table(name = "x")` |
+| `No property 'getAllX' found for type 'X'` au démarrage | Une méthode métier a été écrite dans un `Repository` | Les méthodes dérivées doivent suivre la convention (`findBy…`) ; la logique va dans le Service |
+| Erreur de contrainte à la création d'une agence | Le nom existe déjà (contrainte `UNIQUE`) | Choisir un autre nom |
+| Le login échoue alors que le mot de passe « est le bon » | Mot de passe changé par une réinitialisation de test | Refaire un `forgot-password` / `reset-password` pour repartir d'une valeur connue |
+| Avertissement Maven `duplicate declaration` | Dépendance déclarée deux fois dans `pom.xml` | Supprimer le doublon |
+| Une faute de casse (`updateuser` au lieu de `updateUser`) | Java est sensible à la casse | Vérifier lettre par lettre avant de chercher plus loin |
+
+---
+
+## 14. Limites connues et durcissement avant production
+
+Cette API est solide pour le développement et les démos, mais **elle n'est pas prête pour la production en l'état**. Voici la liste honnête de ce qui reste à faire, par ordre de priorité.
+
+### 🔴 Critique
+
+- [ ] **Remplacer `PUT /api/paiements/{id}/confirmer`.** Aujourd'hui, tout utilisateur connecté peut confirmer un paiement, donc obtenir ses billets sans payer. Il doit être remplacé par un **webhook signé de l'opérateur** (Lumicash), avec vérification de signature et clé d'idempotence, ou au minimum être réservé à un usage serveur.
+- [ ] **Ne plus renvoyer d'entités brutes.** Les objets `User` imbriqués dans les réponses (réservations, chauffeurs, listes d'utilisateurs…) exposent des champs internes : codes de vérification, **codes de réinitialisation de mot de passe**, codes de changement d'email/téléphone, `tokenVersion`. Un admin qui lit la liste des passagers d'un trajet pourrait y lire un code de réinitialisation valide. Corriger avec `@JsonIgnore` sur ces champs et/ou des **DTOs de sortie** (le `ChauffeurDTO` et le `TrajetDTO` restreints déjà décidés vont dans ce sens).
+- [ ] **Verrouiller les écritures sans contrôle de propriété** : `PUT` et `DELETE /api/reservations/{id}`, `DELETE /api/paiements/{id}`, `POST` et `DELETE /api/notifications`, `POST/PUT/DELETE /api/avis`, `POST /api/users`.
+- [ ] **Forcer l'agence depuis le token** pour un `admin_agence` sur `POST/PUT/DELETE` des trajets et des bus (déjà fait pour les chauffeurs). Sinon un admin peut agir sur l'agence d'un autre.
+- [ ] **Imposer la vérification du compte côté serveur** pour réserver et payer (et pour tout compte agence/chauffeur). Pour l'instant seule l'app l'impose.
+- [ ] **Protéger `POST /api/auth/logout-all-devices`.** Il vit sous `/api/auth/**`, entièrement public dans `SecurityConfig` : sans token, il répond par une erreur 500 au lieu d'un 401. Déclarer `.requestMatchers("/api/auth/logout-all-devices").authenticated()` **avant** la règle `permitAll` de `/api/auth/**`.
+- [ ] **Secrets hors du code** : variables d'environnement en production ; régénérer le mot de passe d'application Gmail et la clé JWT s'ils ont déjà circulé.
+- [ ] **HTTPS obligatoire** (terminaison TLS devant l'API). Sans cela, le token circule en clair. Côté Android, l'autorisation du trafic en clair (`network_security_config.xml`) ne doit exister qu'en développement.
+
+### 🟠 Important
+
+- [ ] **CORS** : remplacer `*` par les origines réelles.
+- [ ] **Messages d'erreur du login** (`Email ou Téléphone incorrect` / `Mot de passe incorrect`) : choix UX assumé, mais ils permettent de savoir si un compte existe. Le rate limiting atténue le risque.
+- [ ] **Rate limiting** : compteurs en mémoire et clé `getRemoteAddr()`. Derrière un reverse proxy, lire l'IP réelle (`X-Forwarded-For` de confiance) ; avec plusieurs instances, passer à un stockage partagé (Redis) ; prévoir l'éviction des anciens compteurs.
+- [ ] **Gestion d'erreurs propre** : un `@ControllerAdvice` pour renvoyer de vrais `400`/`404` en JSON au lieu de `500` pour les `RuntimeException` métier.
+- [ ] **Migrations versionnées** (Flyway ou Liquibase) à la place de `ddl-auto=update`.
+- [ ] **Tests automatisés** : aucun à ce jour. Priorité : authentification, réservation/paiement (décrémentation des places, idempotence), contrôles d'accès.
+- [ ] **SMS réel** : remplacer la simulation par un fournisseur.
+- [ ] **Codes OTP** stockés en clair : à hacher (faible risque vu la durée de vie courte, mais bonne pratique).
+- [ ] **Journalisation d'audit** : connexions, échecs, confirmations de paiement, sans jamais journaliser de secrets.
+
+---
+
+## 15. Feuille de route
+
+**Fait**
+
+- [x] 10 APIs de base + Favoris, architecture Controller / Service / Repository
+- [x] Authentification JWT, OTP email + téléphone (simulé), mot de passe oublié, renvoi de code
+- [x] Révocation de tokens (`token_version`) et durée de 5 ans
+- [x] Audit de sécurité (IDOR, rôles, DTOs, validation, rate limiting, CORS)
+- [x] Réservations groupées, paiement par groupe, confirmation avec décrémentation des places
+- [x] Notifications (billet, QR code, confirmation), broadcast, purge à 30 jours
+- [x] Changement d'email / téléphone par code, suppression de compte (anonymisation)
+- [x] Création combinée chauffeur (User + fiche)
+
+**En cours / prochain**
+
+- [ ] **Scan QR** : `GET /api/reservations/qr/{qrCode}`, réservé au chauffeur du trajet, à l'admin de l'agence propriétaire et au super admin ; renvoie les données fraîches du billet
+- [ ] **Statistiques d'agence** : jour, semaine, mois (réservations, revenus, taux de remplissage, trajets les plus demandés)
+- [ ] **DTOs restreints** pour l'app Agence (`ChauffeurDTO`, `TrajetDTO` côté chauffeur)
+- [ ] **Intégration Lumicash** (puis EcoCash, Smart Pesa, BurundiPay) avec webhook signé
+- [ ] **Dashboard Super Admin** (web)
+
+**Plus tard**
+
+- [ ] Notifications push (Firebase) : aujourd'hui, les notifications fonctionnent en *pull* uniquement
+- [ ] Suivi du bus en temps réel (GPS)
+- [ ] **Phase 2 — taxi à la demande** (type Yassir / inDrive / Heetch) : chauffeurs indépendants avec abonnement, matching par géolocalisation, WebSockets, tarification dynamique. Il réutilisera les utilisateurs, paiements et notifications déjà construits
+
+---
+
+## 16. Ajouter une nouvelle ressource
+
+Le schéma est toujours le même. Exemple avec une ressource `Machin` :
+
+1. **Table** : créer la table (ou laisser Hibernate la générer depuis l'entité en développement).
+2. **Model** : `Machin.java` avec `@Entity`, `@Table(name = "machins")`, `@Data` ; relations en `@ManyToOne` / `@JoinColumn`.
+3. **Repository** : `interface MachinRepository extends JpaRepository<Machin, Long>` ; méthodes dérivées uniquement (`findByUserId`, …).
+4. **DTO** (si le client envoie des données) : `MachinRequest` avec les annotations de validation, **sans** les champs que le serveur décide.
+5. **Service** : la logique métier ; c'est ici que se forcent les statuts, que s'appliquent les vérifications.
+6. **Controller** : `@RestController` + `@RequestMapping("/api/machins")` ; utiliser `getUserConnecte()` / `estAdmin()` pour les contrôles de propriété ; `@Valid` sur les `@RequestBody`.
+7. **SecurityConfig** : ajouter la règle de rôle si nécessaire.
+8. **Tester** dans Postman : cas nominal, accès sans token, accès avec le token d'un autre utilisateur, données invalides.
+9. **Documenter** : mettre à jour la table de la [section 9](#9-référence-de-lapi) et `PROJET_STATUS.md`.
+
+---
+
+## Licence
+
+À définir (tous droits réservés tant qu'aucune licence n'est choisie).
+
+---
+
+*Traffico — fait avec patience, beaucoup de `Ctrl+C`, et la conviction qu'une bonne API est d'abord une API qu'on comprend.* 
