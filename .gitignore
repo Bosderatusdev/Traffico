@@ -1,0 +1,25 @@
+# Fichiers sensibles / internes - racine du projet
+/01-migration-chauffeurs-user-link.sql
+/02-endpoint-scan-qr.md
+/03-endpoint-stats-agence.md
+/code App Transport.docx
+/database identifiers
+/Database structure.txt
+/frontend_blueprint.jpg
+/frontend_blueprint2.jpg.jpg
+/schema_database_transport_burundi.html
+
+
+# Secrets
+**/application.properties
+!**/application.properties.example
+**/application-*.properties
+*.jks
+*.keystore
+key.properties
+.env
+
+# Divers
+.DS_Store
+.idea/
+*.iml

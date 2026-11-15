@@ -1,0 +1,504 @@
+# Traffico, app client
+
+Application mobile Flutter pour chercher un trajet en bus, réserver une ou plusieurs places d'un coup et garder son billet (avec QR code) sur le téléphone. Je la développe pour le Burundi, mais le numéro de téléphone accepte n'importe quel pays.
+
+Ce dépôt contient seulement l'app client. Le projet complet compte trois applications :
+
+- l'app client (ici)
+- l'app agence, pour les admins d'agence et les chauffeurs (pas encore commencée)
+- un dashboard web pour le super admin (plus tard)
+
+Le backend est un projet à part, `transport-api` (Spring Boot, PostgreSQL). L'app ne fonctionne pas sans lui.
+
+## Sommaire
+
+1. [Où j'en suis](#où-jen-suis)
+2. [Stack](#stack)
+3. [Installer et lancer](#installer-et-lancer)
+4. [Brancher l'app au backend](#brancher-lapp-au-backend)
+5. [Structure du dossier lib](#structure-du-dossier-lib)
+6. [Comment ça marche](#comment-ça-marche)
+7. [Contrat avec l'API](#contrat-avec-lapi)
+8. [Règles de code](#règles-de-code)
+9. [Données de test](#données-de-test)
+10. [Problèmes déjà rencontrés](#problèmes-déjà-rencontrés)
+11. [Build de production](#build-de-production)
+12. [Et ensuite](#et-ensuite)
+
+---
+
+## Où j'en suis
+
+L'app est presque terminée. Le gros morceau qui manque est le paiement, que je brancherai quand j'aurai l'accès à l'API Lumicash.
+
+### Ce qui marche
+
+- Inscription en 4 étapes avec barre de progression : nom et prénom, téléphone international et email facultatif, mot de passe, code de vérification.
+- Connexion avec détection automatique du mode (téléphone ou email), mot de passe oublié.
+- Recherche de trajets avec autocomplétion des villes, anti-rebond et annulation des recherches devenues inutiles.
+- Réservation de plusieurs places en un seul achat. Les places ne sont pas numérotées, comme dans les bus d'ici.
+- Un billet par place, chacun avec son propre QR code, imprimable en PDF.
+- Écran Réservations : un achat = une carte, avec les billets individuels dedans.
+- Messages (notifications) avec lu / non lu.
+- Favoris (agences et trajets).
+- Profil : informations personnelles, sécurité, changement d'email, de téléphone et de mot de passe par code de vérification, suppression de compte avec mot de passe.
+- Thème clair et sombre, français et anglais, changement de langue sans redémarrage.
+
+### Ce qui n'est pas terminé
+
+- **Paiement** : le bouton « Procéder au paiement » ne fait rien. Le backend est prêt, c'est l'accès Lumicash qui manque (voir [le contrat](#paiement-pas-encore-branché)).
+- **Traduction** : seuls Welcome, Login, la première étape d'inscription et la barre de navigation utilisent `AppLocalizations`. Les autres écrans sont encore en français en dur.
+- **Kirundi et swahili** : grisés dans le sélecteur. Je préfère attendre une vraie traduction.
+- **Mes avis** : l'écran est un espace réservé. L'endpoint `GET /api/avis/user/{id}` existe côté backend, je ne l'ai pas encore relié.
+- **Moyens de paiement** et **préférences de notifications** : juste l'écran. Les interrupteurs de notifications ne sont pas enregistrés.
+- **Aide et support** : les coordonnées affichées sont provisoires.
+- **Conditions, confidentialité, à propos** : textes à écrire.
+- **Favoris** : l'étoile des cartes de recherche ajoute un trajet en favori mais ne le retire pas (il faut passer par l'écran Favoris). Il n'y a pas encore de bouton pour ajouter une agence en favori, même si le service et l'écran de liste savent les gérer.
+- **Comptes non client** : un `admin_agence` ou un `chauffeur` peut techniquement se connecter ici, mais cette app n'a d'interface que pour le rôle client.
+- **Notifications push** : il n'y en a pas. Les notifications sont récupérées quand on ouvre l'onglet Messages (ou en tirant pour rafraîchir). Pour de vraies notifications quand l'app est fermée, il faudra un service de push côté backend et côté Flutter.
+- **Tests automatisés** : aucun pour l'instant.
+
+---
+
+## Stack
+
+| Domaine | Choix |
+|---|---|
+| Framework | Flutter 3.44.8, Dart |
+| Identifiant Android | `com.transport.transport_client` |
+| Appareil de test | Émulateur Pixel 8, API 36 |
+| Client HTTP | `dio` 5.11 |
+| Stockage chiffré (token, session) | `flutter_secure_storage` 10.3 |
+| Préférences (langue) | `shared_preferences` 2.5 |
+| Téléphone international | `intl_phone_field` |
+| PDF et impression | `pdf` 3.13, `printing` 5.15 |
+| QR code à l'écran | `qr_flutter` |
+| Dates, i18n | `intl` 0.19, `flutter_localizations`, fichiers ARB |
+| Appel et email depuis l'app | `url_launcher` 6.3 |
+| Police | `google_fonts` 6.3 (Poppins) |
+
+Pas de Firebase. Le JWT vient de mon backend, la base est PostgreSQL.
+
+---
+
+## Installer et lancer
+
+Prérequis : Flutter 3.44.8 (ou compatible), un émulateur Android ou un téléphone, et le backend lancé en local sur le port 8081 avec sa base `transport_burundi`.
+
+```bash
+flutter pub get
+flutter gen-l10n
+flutter run
+```
+
+`flutter gen-l10n` génère `app_localizations.dart` à partir des fichiers `.arb`. Il faut le lancer avant le premier `flutter run`, puis à chaque fois que je modifie un `.arb`. Il lit `l10n.yaml`, à la racine :
+
+```yaml
+arb-dir: lib/l10n
+template-arb-file: app_fr.arb
+output-localization-file: app_localizations.dart
+output-class: AppLocalizations
+```
+
+Le `pubspec.yaml` doit aussi contenir `generate: true` sous `flutter:`.
+
+Quand j'ajoute un package avec du code natif (`printing`, `shared_preferences`, `url_launcher`, `flutter_secure_storage`…), le hot reload ne suffit pas. J'arrête complètement l'app, puis :
+
+```bash
+flutter clean
+flutter pub get
+```
+
+et je relance depuis zéro. Sinon j'ai une `MissingPluginException`.
+
+### Mettre à jour les paquets
+
+```bash
+flutter pub outdated
+flutter pub upgrade
+```
+
+`flutter pub upgrade` reste dans les limites du `pubspec.yaml`, c'est sans risque. Je ne touche pas aux montées de version majeures (`flutter_secure_storage` 11, `google_fonts` 9) sans raison précise, et si je le fais, c'est un paquet à la fois avec un commit avant. Après une mise à jour, je vérifie quatre choses : se reconnecter après avoir fermé l'app (le token doit survivre), imprimer un billet, retrouver la langue choisie après un redémarrage, et ouvrir l'appel et l'email depuis Aide et support.
+
+---
+
+## Brancher l'app au backend
+
+L'adresse du serveur est dans `lib/config/api_config.dart` :
+
+```dart
+class ApiConfig {
+  static const String baseUrl = 'http://10.0.2.2:8081';
+}
+```
+
+| Où tourne l'app | `baseUrl` |
+|---|---|
+| Émulateur Android | `http://10.0.2.2:8081` |
+| Téléphone sur le même Wi-Fi | `http://<IP locale de la machine>:8081` |
+| Production | l'URL HTTPS du serveur |
+
+`10.0.2.2` est l'adresse de ma machine vue depuis l'émulateur. `localhost` ne marche pas : il désigne l'émulateur lui-même.
+
+### HTTP en clair (développement seulement)
+
+Depuis Android 9, le trafic `http://` est bloqué par défaut. J'ai autorisé `10.0.2.2` et `localhost` dans `android/app/src/main/res/xml/network_security_config.xml` :
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
+```
+
+Et ce fichier est référencé sur la balise `<application>` de `android/app/src/main/AndroidManifest.xml` :
+
+```xml
+android:networkSecurityConfig="@xml/network_security_config"
+```
+
+C'est une exception pour le développement. En production, ce sera du HTTPS et je l'enlèverai.
+
+---
+
+## Structure du dossier lib
+
+```
+lib/
+├── main.dart
+├── config/
+│   └── api_config.dart
+├── data/
+│   └── villes.dart
+├── l10n/
+│   ├── app_fr.arb
+│   ├── app_en.arb
+│   └── app_localizations*.dart        (générés)
+├── models/
+│   ├── agence.dart
+│   ├── favori.dart
+│   ├── login_response.dart
+│   ├── notification_item.dart
+│   ├── register_response.dart
+│   ├── reservation.dart
+│   ├── trajet.dart
+│   └── user_profile.dart
+├── services/
+│   ├── api_client.dart
+│   ├── auth_service.dart
+│   ├── favori_service.dart
+│   ├── locale_service.dart
+│   ├── notification_service.dart
+│   ├── reservation_service.dart
+│   ├── secure_storage_service.dart
+│   ├── ticket_pdf_service.dart
+│   ├── trajet_service.dart
+│   └── user_service.dart
+├── theme/
+│   └── app_theme.dart
+├── utils/
+│   ├── debouncer.dart
+│   └── qr_payload.dart
+├── widgets/
+│   ├── language_switcher.dart
+│   └── ville_autocomplete_field.dart
+└── screens/
+    ├── welcome_screen.dart
+    ├── login_screen.dart
+    ├── register_info_screen.dart         étape 1/4
+    ├── register_phone_screen.dart        étape 2/4
+    ├── register_password_screen.dart     étape 3/4
+    ├── register_verify_screen.dart       étape 4/4
+    ├── register_success_screen.dart
+    ├── forgot_password_screen.dart
+    ├── reset_password_screen.dart
+    ├── main_navigation_screen.dart
+    ├── accueil_screen.dart
+    ├── trajet_detail_screen.dart
+    ├── reservation_confirmee_screen.dart
+    ├── reservations_screen.dart
+    ├── ticket_detail_screen.dart
+    ├── messages_screen.dart
+    ├── profil_screen.dart
+    ├── mon_compte_screen.dart
+    ├── infos_personnelles_screen.dart
+    ├── changer_email_screen.dart
+    ├── changer_telephone_screen.dart
+    ├── securite_screen.dart
+    ├── mes_avis_screen.dart
+    ├── favoris_screen.dart
+    ├── parametres_screen.dart
+    ├── langue_screen.dart
+    ├── notifications_prefs_screen.dart
+    ├── aide_support_screen.dart
+    ├── conditions_screen.dart
+    ├── confidentialite_screen.dart
+    ├── a_propos_screen.dart
+    └── supprimer_compte_screen.dart
+```
+
+---
+
+## Comment ça marche
+
+### Session et appels réseau
+
+`api_client.dart` crée une seule instance de Dio (délais de connexion et de réception de 10 secondes, en-tête JSON) avec un intercepteur : avant chaque requête, il lit le token dans `SecureStorageService` et ajoute `Authorization: Bearer <token>` s'il existe.
+
+`secure_storage_service.dart` garde quatre valeurs sous ces clés : `auth_token`, `user_id`, `user_role`, `user_nom`. La déconnexion et la suppression de compte appellent `clearSession()`.
+
+Les services ne laissent pas remonter les erreurs Dio. Ils lèvent une `ApiException` (définie dans `auth_service.dart`) avec un message lisible. Le message est lu dans `data['message']`, sinon `data['error']`, sinon un texte générique selon le type d'erreur (délai dépassé, serveur injoignable). Les écrans attrapent `ApiException` et l'affichent dans un SnackBar.
+
+### Inscription et connexion
+
+L'inscription enchaîne quatre écrans qui se passent les données par le constructeur. Le téléphone vient de `IntlPhoneField` (`completeNumber`, avec le `+`). À l'étape 3, l'app appelle `POST /api/auth/register`, récupère un `userId`, puis ouvre l'écran de code.
+
+L'écran de code (`register_verify_screen.dart`) a 6 cases, envoie la vérification dès que les 6 chiffres sont saisis, et propose « Renvoyer le code » avec 60 secondes d'attente. Il vérifie d'abord le téléphone, puis enchaîne sur l'email si un email a été donné, puis affiche l'écran de succès.
+
+À la connexion, un seul champ est affiché au départ. Si le premier caractère tapé est un chiffre, il se transforme en champ téléphone avec sélecteur de pays (Burundi par défaut). Si c'est une lettre, il reste un champ email. Une petite croix permet de revenir au choix de départ. Un détail : au moment de la bascule vers le téléphone, le premier chiffre tapé est effacé, il faut le retaper.
+
+Après un login réussi, l'app regarde le canal utilisé : `telephoneVerifie` si l'utilisateur s'est connecté par téléphone, `emailVerifie` s'il s'est connecté par email. Si ce canal n'est pas vérifié, redirection vers l'écran de code, sinon vers la navigation principale. Le backend laisse passer un compte non vérifié, c'est donc l'app qui bloque.
+
+Le mot de passe oublié est en deux écrans : demande du code (téléphone ou email au choix), puis code et nouveau mot de passe.
+
+### Recherche de trajets
+
+L'écran Accueil a deux champs de ville avec suggestions (`VilleAutocompleteField`), une date facultative et un bouton Rechercher.
+
+- Les suggestions viennent de la liste dans `lib/data/villes.dart`, filtrées en mémoire, avec 250 ms d'anti-rebond.
+- Chaque recherche annule la précédente avec un `CancelToken`, pour qu'un résultat en retard n'écrase pas un résultat plus récent.
+- Le backend ne filtre pas par date. L'app le fait après réception : avec une date choisie, seuls les trajets de ce jour dont l'heure n'est pas passée ; sans date, les trajets des 7 prochains jours. Le tout est trié du plus proche au plus lointain.
+- Le sélecteur de date refuse les dates passées.
+- Sous les résultats, une rangée « Bientôt disponible » (taxi, colis, assistance) en espaces réservés, grisés.
+
+### Réservation
+
+Depuis une carte de résultat, `trajet_detail_screen.dart` montre le trajet, le tarif et un sélecteur de nombre de places (de 1 jusqu'à `placesDisponibles`). Le total affiché est `tarif × nombre de places`. Le bouton envoie `POST /api/reservations`, et le backend crée N réservations qui partagent un même `groupeId`. L'app passe ensuite à `reservation_confirmee_screen.dart`, qui montre le récapitulatif en attente de paiement.
+
+### Billets, QR codes et PDF
+
+L'onglet Réservations (`reservations_screen.dart`) charge toutes les réservations de l'utilisateur et les regroupe par `groupeId` (une réservation sans `groupeId` forme son propre groupe), des plus récentes aux plus anciennes. Chaque carte montre le trajet, la date, le nombre de places, le total et un badge Confirmée ou En attente. En tapant sur une place, on ouvre le billet (`ticket_detail_screen.dart`).
+
+Le QR code encode un texte lisible, construit par `buildQrPayload()` dans `lib/utils/qr_payload.dart` :
+
+```
+TRAFFICO - Billet de voyage
+Passager: <nom>
+Trajet: <départ> -> <arrivée>
+Depart: <jj/MM/aaaa HH:mm>
+Agence: <nom de l'agence>
+Place: <Place i/N>
+Prix: <tarif> FBu
+Statut: <Confirmee | En attente>
+Code: <uuid>
+```
+
+Je l'ai fait comme ça pour qu'une appli de scan quelconque affiche directement les informations, sans que mon app soit installée. Le défaut : le nom du passager est lisible par quiconque scanne le code. Pour le contrôle dans le bus, l'app agence utilisera seulement le champ `Code` et ira chercher les données à jour avec `GET /api/reservations/qr/{qrCode}`.
+
+Règle de validité : le billet est valable jusqu'à 24 heures après l'heure de départ. Passé ce délai, le QR est remplacé par « QR expiré », à l'écran et dans le PDF. La suppression d'un billet n'est possible qu'après ce délai. Avant, le bouton reste visible mais affiche le temps restant.
+
+L'impression (`ticket_pdf_service.dart`) fabrique un PDF à dimensions personnalisées, pas un format A4, A5 ou A6 : une carte de 210 × 370 points avec 15 points de marge, des coins arrondis, un bandeau bleu en haut et en bas (`#1E5EFF`), un QR de 88 × 88 et le statut en vert ou en orange. L'aperçu d'impression de Android permet d'imprimer, d'enregistrer ou de partager le fichier. Sur une imprimante de bureau, le papier reste rectangulaire, les coins arrondis ne sont que dessinés.
+
+### Messages
+
+`GET /api/notifications/user/{userId}` (et non `/api/notifications`, réservé aux admins). L'app écarte les notifications dont le titre contient « billet » ou « qr code » (elles appartiennent à l'onglet Réservations) et ne garde que les alertes générales, comme « Paiement confirmé » ou un message de diffusion. Les non-lues ont un point et un fond teinté. Toucher une notification la marque lue (`PUT /api/notifications/{id}/read`) et ouvre le détail dans une feuille modale. Tirer vers le bas rafraîchit. Le backend supprime les notifications de plus de 30 jours.
+
+### Profil
+
+- **Informations personnelles** : lecture seule, avec un bouton Modifier. La feuille de modification enregistre le nom et le prénom directement (`PUT /api/users/{id}`). L'email et le téléphone passent par un écran dédié : l'utilisateur donne la nouvelle valeur, un code est envoyé à cette nouvelle adresse (ou ce nouveau numéro), et l'ancienne valeur reste en place tant que le code n'est pas confirmé. Le téléphone et l'email ne peuvent pas être pris par un autre compte.
+- **Sécurité** : changement de mot de passe en réutilisant `forgot-password` puis `reset-password` (code envoyé, puis nouveau mot de passe), et affichage du statut de vérification du téléphone et de l'email.
+- **Favoris** : liste des agences et des trajets favoris avec suppression. Un favori « trajet » est une paire de villes, pas un identifiant de trajet.
+- **Suppression de compte** : l'utilisateur retape son mot de passe, confirme dans une boîte de dialogue, l'app appelle `POST /api/users/{id}/delete-self`, vide la session et revient à l'écran d'accueil. Côté backend, le compte est anonymisé (nom remplacé, email et mot de passe effacés, téléphone remplacé par une valeur factice `del_<id>`, rôle `supprime`) au lieu d'être supprimé, pour garder l'historique des réservations et des paiements.
+- **Déconnexion** : confirmation, `clearSession()`, retour à l'écran d'accueil.
+
+### Thème
+
+Tout est dans `lib/theme/app_theme.dart`.
+
+- `AppColors` : bleu `#1E5EFF` (primaire), `#6E93FF` (primaire en mode sombre), teal `#00C2A8` (secondaire), vert `#16A34A` (succès), orange `#F59E0B` (alerte), rouge `#E5484D` (erreur).
+- `AppTheme.light()` et `AppTheme.dark()`, choisis automatiquement avec `ThemeMode.system`.
+- `AppSemanticColors` (une `ThemeExtension`) pour ce que `ColorScheme` ne couvre pas : `success`, `warning`, `surfaceVariant`, `border`, `textSecondary`. On la lit avec `Theme.of(context).extension<AppSemanticColors>()!`.
+- Le `textTheme` Poppins est défini une fois (titres, corps, boutons). Boutons, champs, cartes, barre de navigation, SnackBar et boîtes de dialogue sont stylés dans le thème, pas écran par écran.
+
+### Langues
+
+Les textes sont dans `lib/l10n/app_fr.arb` (le modèle) et `app_en.arb`. Les deux fichiers doivent avoir les mêmes clés. Pour traduire un écran :
+
+1. ajouter la clé dans les deux `.arb`
+2. lancer `flutter gen-l10n`
+3. dans l'écran :
+
+```dart
+final l10n = AppLocalizations.of(context)!;
+Text(l10n.loginTitle);
+```
+
+`main.dart` garde la langue dans son état et expose `TrafficoApp.of(context)?.changerLangue('en')`. Cet appel reconstruit toute l'app tout de suite et enregistre le choix dans `shared_preferences` (clé `app_locale`, via `locale_service.dart`). Au lancement, la langue enregistrée est relue. Le bouton de langue (`LanguageSwitcherButton`) est dans la barre de Welcome, Login et de la première étape d'inscription, et le même choix existe dans Paramètres, Langue. `main.dart` initialise aussi le format des dates pour `fr_FR` et `en_US`.
+
+---
+
+## Contrat avec l'API
+
+Toutes les routes sont sous `/api` et demandent un JWT, sauf `/api/auth/**`. Les erreurs reviennent sous la forme `{"error": "..."}` (parfois `{"message": "..."}`). Les routes d'authentification sont limitées à 5 tentatives toutes les 2 minutes, au-delà c'est une réponse 429.
+
+### Authentification
+
+| Méthode | Route | Corps | Réponse utile |
+|---|---|---|---|
+| POST | `/api/auth/register` | `nom`, `prenom`, `telephone` (avec `+`), `email` (facultatif), `motDePasse` (6 caractères minimum) | `userId`, `message` |
+| POST | `/api/auth/login` | `identifiant` (téléphone ou email), `motDePasse` | `token`, `userId`, `nom`, `role`, `emailVerifie`, `telephoneVerifie` |
+| POST | `/api/auth/verify-phone` | `userId` (**string**), `code` | `message` |
+| POST | `/api/auth/verify-email` | `userId` (**string**), `code` | `message` |
+| POST | `/api/auth/resend-code` | `userId` (**string**), `type` (`phone` ou `email`) | `message` |
+| POST | `/api/auth/forgot-password` | `identifiant` | `message` |
+| POST | `/api/auth/reset-password` | `identifiant`, `code`, `nouveauMotDePasse` | `message` |
+
+Le login ne renvoie que `nom`, pas `prenom`.
+
+### Utilisateurs
+
+| Méthode | Route | Corps | Remarque |
+|---|---|---|---|
+| GET | `/api/users/{id}` | | Uniquement son propre profil |
+| PUT | `/api/users/{id}` | `nom`, `prenom` | Seuls ces deux champs sont modifiables |
+| POST | `/api/users/{id}/change-email/request` | `nouvelleValeur` | Envoie un code au nouvel email |
+| POST | `/api/users/{id}/change-email/confirm` | `code` | Applique le nouvel email |
+| POST | `/api/users/{id}/change-telephone/request` | `nouvelleValeur` | Envoie un code au nouveau numéro |
+| POST | `/api/users/{id}/change-telephone/confirm` | `code` | Applique le nouveau numéro |
+| POST | `/api/users/{id}/delete-self` | `motDePasse` | Anonymisation du compte |
+
+Pour la suppression, j'ai pris un `POST` et pas un `DELETE` : le corps de la requête (le mot de passe) n'était pas envoyé de façon fiable avec `DELETE` depuis Dio sur Android.
+
+### Trajets et réservations
+
+| Méthode | Route | Corps ou paramètres | Réponse utile |
+|---|---|---|---|
+| GET | `/api/trajets/search` | `depart`, `arrivee` | Liste de trajets. Insensible à la casse, pas de filtre de date |
+| POST | `/api/reservations` | `trajetId`, `nombrePlaces` | Liste de N réservations liées par un `groupeId` |
+| GET | `/api/reservations/user/{userId}` | | Réservations de l'utilisateur |
+| DELETE | `/api/reservations/{id}` | | Supprime un billet |
+
+Un trajet ressemble à ceci (le champ `agence` peut être `null` si le trajet a été créé sans agence) :
+
+```json
+{
+  "id": 14,
+  "agence": { "id": 2, "nom": "Agence Star Transport" },
+  "bus": null,
+  "villeDepart": "Bujumbura",
+  "villeArrivee": "Gitega",
+  "heureDepart": "2026-09-08T09:00:00",
+  "heureArrivee": "2026-09-08T12:00:00",
+  "tarif": 15000.0,
+  "placesDisponibles": 45,
+  "statut": "actif"
+}
+```
+
+Une réservation contient `id`, `trajet`, `numeroSiege` (de la forme `Place 2/4`), `statut` (`en_attente` ou `confirmee`), `qrCode` (un UUID), `groupeId` et `createdAt`. Si on demande plus de places qu'il n'en reste, le backend répond « Places insuffisantes sur ce trajet ».
+
+### Notifications et favoris
+
+| Méthode | Route | Corps | Remarque |
+|---|---|---|---|
+| GET | `/api/notifications/user/{userId}` | | `id`, `titre`, `message`, `lu`, `createdAt` |
+| PUT | `/api/notifications/{id}/read` | | Marque comme lue |
+| POST | `/api/favoris` | `type: "agence"` + `agenceId`, ou `type: "trajet"` + `villeDepart` + `villeArrivee` | Refuse les doublons avec un message clair |
+| GET | `/api/favoris/user/{userId}` | | `id`, `type`, `agence`, `villeDepart`, `villeArrivee` |
+| DELETE | `/api/favoris/{id}` | | Seulement ses propres favoris |
+
+### Paiement (pas encore branché)
+
+Côté backend, le flux est prêt et testé :
+
+1. `POST /api/paiements` avec `groupeId`, `montant` (tarif × places) et `methode` (`lumicash` par défaut). Le paiement est créé avec le statut `en_attente`.
+2. `PUT /api/paiements/{id}/confirmer`. Le statut passe à `reussi`, `placesDisponibles` diminue, les réservations du groupe passent à `confirmee`, et les notifications sont créées (« Paiement confirmé », puis un billet et un QR par place).
+
+La réponse de confirmation contient tout ce qu'il faut pour l'écran de fin :
+
+```json
+{
+  "paiementId": 7,
+  "statut": "reussi",
+  "montant": 30000.0,
+  "methode": "lumicash",
+  "villeDepart": "Bujumbura",
+  "villeArrivee": "Gitega",
+  "heureDepart": "2026-09-08T09:00",
+  "nomAgence": "Agence Star Transport",
+  "nombrePlaces": 2,
+  "qrCodes": ["...", "..."]
+}
+```
+
+Quand j'aurai l'accès Lumicash, le travail côté Flutter sera : un `paiement_service.dart`, le bouton « Procéder au paiement » de `reservation_confirmee_screen.dart`, et l'écran de confirmation.
+
+---
+
+## Règles de code
+
+- Jamais de couleur ni de style de texte écrits en dur dans un écran : `theme.textTheme`, `Theme.of(context).colorScheme` et `AppSemanticColors`.
+- Les services lèvent des `ApiException`, les écrans les affichent dans un SnackBar.
+- Un formulaire est toujours dans un `SingleChildScrollView`, sinon il déborde quand le clavier s'ouvre.
+- Un numéro de téléphone est toujours envoyé et stocké avec l'indicatif et le `+` (`+25765555555`).
+- `userId` est envoyé en string pour `verify-phone`, `verify-email` et `resend-code`.
+- Un favori de type trajet est une paire de villes, jamais un identifiant de trajet : un trajet précis n'existe plus après son départ.
+- Quand une action change des données (supprimer un billet, par exemple), l'écran qui l'a lancée attend le retour de la navigation puis recharge sa liste.
+- Une action sensible qui a besoin d'un corps de requête fiable passe par un `POST`, pas un `DELETE`.
+
+---
+
+## Données de test
+
+La recherche n'affiche que des trajets dans le futur, donc des trajets créés il y a quelques semaines n'apparaîtront plus. Pour tester, il faut créer des trajets avec des dates à venir, soit avec un token `admin_agence` via `POST /api/trajets`, soit directement en SQL avec `CURRENT_DATE + INTERVAL '3 days'`. Il faut aussi que chaque trajet soit lié à une agence, sinon la carte n'affiche pas son nom.
+
+Les comptes `admin_agence` et `chauffeur` n'ont pas d'inscription publique : je les crée à la main en base (en passant un compte normal en `admin_agence` avec son `agence_id`, et `email_verifie` / `telephone_verifie` à `true`).
+
+---
+
+## Problèmes déjà rencontrés
+
+| Symptôme | Cause et solution |
+|---|---|
+| « Impossible de contacter le serveur » | La plupart du temps, le backend n'était pas lancé. Sinon, vérifier `baseUrl` et la config réseau Android. |
+| Requêtes `http://` qui échouent sur Android | Trafic en clair bloqué depuis Android 9. Vérifier `network_security_config.xml` et sa référence dans `AndroidManifest.xml`. |
+| `MissingPluginException` après l'ajout d'un package | Le plugin natif n'est pas enregistré par un hot reload. Arrêt complet, `flutter clean`, `flutter pub get`, relance. |
+| `INSTALL_FAILED_INSUFFICIENT_STORAGE` | L'émulateur n'a plus de place. Device Manager, « Wipe Data », ou augmenter le stockage interne de l'AVD. |
+| `The 'arb-dir' directory does not exist` | Créer `lib/l10n/` avec `app_fr.arb` et `app_en.arb`, puis `flutter gen-l10n`. |
+| `RenderFlex overflowed` quand le clavier s'ouvre | Mettre le contenu dans un `SingleChildScrollView`. |
+| « ListTile background color may be invisible » | Les `ListTile` des suggestions doivent être dans un `Material`. |
+| Messages vides pour un compte client | Il faut appeler `/api/notifications/user/{id}` et non `/api/notifications` (réservé aux admins). |
+| Session perdue après la mise à jour de `flutter_secure_storage` | Migration de l'algorithme de chiffrement. Se reconnecter, et tester les montées majeures à part. |
+
+---
+
+## Build de production
+
+```bash
+flutter build apk --release
+flutter build appbundle --release
+```
+
+Avant de publier :
+
+- mettre l'URL HTTPS de production dans `ApiConfig.baseUrl`
+- retirer l'exception HTTP en clair de `network_security_config.xml`
+- vérifier que la permission `INTERNET` est déclarée dans `android/app/src/main/AndroidManifest.xml` (elle n'est ajoutée toute seule qu'en mode debug)
+- configurer la signature de l'application
+- remplacer les coordonnées provisoires d'Aide et support, et écrire les textes légaux
+- avoir une politique de confidentialité en ligne : le Play Store l'exige, comme la suppression de compte, qui est déjà en place et fonctionnel
+
+---
+
+## Et ensuite
+
+1. Brancher le paiement Lumicash dès que j'ai l'accès.
+2. Terminer la traduction français et anglais, écran par écran.
+3. Relier « Mes avis », ajouter l'ajout d'une agence en favori, et retirer un favori depuis les cartes de recherche.
+4. Rédiger les textes légaux.
+5. Côté backend, renvoyer des DTO plutôt que l'entité `User` complète dans les réponses.
+6. Créer le paquet Dart partagé `traffico_core` (thème, modèles, services API), puis démarrer l'app agence avec le scan de QR pour les chauffeurs et les statistiques journalières, hebdomadaires et mensuelles pour les admins.
+7. Plus tard : le dashboard web du super admin, les notifications push, le kirundi et le swahili.
