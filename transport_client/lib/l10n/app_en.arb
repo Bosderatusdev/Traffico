@@ -1,0 +1,93 @@
+{
+  "@@locale": "en",
+
+  "appName": "Traffico",
+  "welcomeTagline": "Book your trip with ease, wherever you are",
+  "login": "Log in",
+  "createAccount": "Create an account",
+  "alreadyHaveAccount": "I already have an account",
+  "noAccountYet": "Don't have an account yet?",
+  "loginButton": "Log in",
+
+  "loginTitle": "Welcome back!",
+  "loginSubtitle": "Type your phone or email, login adapts automatically",
+  "phoneOrEmail": "Phone or email",
+  "phone": "Phone",
+  "email": "Email",
+  "password": "Password",
+  "forgotPassword": "Forgot password?",
+  "fieldRequired": "This field is required",
+  "invalidEmail": "Invalid email",
+
+  "registerInfoTitle": "What's your name?",
+  "registerInfoSubtitle": "This information will appear on your tickets",
+  "lastName": "Last name",
+  "firstName": "First name",
+  "continueButton": "Continue",
+  "back": "Back",
+
+  "registerPhoneTitle": "How can we reach you?",
+  "registerPhoneSubtitle": "Phone is required, email is optional",
+  "emailOptional": "Email (optional)",
+
+  "registerPasswordTitle": "Create your password",
+  "registerPasswordSubtitle": "At least 6 characters",
+  "confirmPassword": "Confirm password",
+  "passwordsDontMatch": "Passwords don't match",
+
+  "verifyTitle": "Enter the code you received",
+  "resendCode": "Resend code",
+  "verifyButton": "Verify",
+
+  "accountCreatedTitle": "Account created!",
+  "accountCreatedSubtitle": "Your account has been verified.\nYou can now log in.",
+
+  "navHome": "Home",
+  "navReservations": "Bookings",
+  "navMessages": "Messages",
+  "navProfile": "Profile",
+
+  "searchDeparture": "Departure city",
+  "searchArrival": "Arrival city",
+  "searchDate": "Date (optional)",
+  "searchAllDates": "All dates",
+  "searchButton": "Search",
+  "noTripFound": "No trip found",
+  "tryOtherCity": "Try another city or another date",
+  "findYourTrip": "Find your next trip",
+  "enterDestination": "Enter your destination to see available trips",
+  "comingSoon": "Coming soon",
+
+  "noReservationYet": "No reservation yet",
+  "ticketsWillAppear": "Your ticket history will appear here",
+  "confirmed": "Confirmed",
+  "pending": "Pending",
+
+  "noNotificationYet": "No notification yet",
+  "alertsWillAppear": "Confirmations and alerts will appear here",
+
+  "myAccount": "My account",
+  "settings": "Settings",
+  "logout": "Log out",
+  "logoutConfirm": "You'll need to log in again to access your account.",
+  "cancel": "Cancel",
+
+  "personalInfo": "Personal information",
+  "security": "Security",
+  "paymentMethods": "Payment methods",
+  "myReviews": "My reviews",
+  "favorites": "Favorites",
+
+  "language": "Language",
+  "notificationPrefs": "Notification preferences",
+  "helpSupport": "Help & support",
+  "termsOfUse": "Terms of use",
+  "privacyPolicy": "Privacy policy",
+  "about": "About",
+  "deleteAccount": "Delete my account",
+  "greeting" : "Welcome",
+  "noCharge" : "Difficult to load information",
+  
+  
+  
+}

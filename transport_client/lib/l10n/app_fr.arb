@@ -1,0 +1,90 @@
+{
+  "@@locale": "fr",
+
+  "appName": "Traffico",
+  "welcomeTagline": "Réservez votre trajet en toute simplicité, où que vous soyez",
+  "login": "Connexion",
+  "createAccount": "Créer un compte",
+  "alreadyHaveAccount": "J'ai déjà un compte",
+  "noAccountYet": "Pas encore de compte ?",
+  "loginButton": "Se connecter",
+
+  "loginTitle": "Content de te revoir !",
+  "loginSubtitle": "Tape ton téléphone ou ton email, la connexion s'adapte automatiquement",
+  "phoneOrEmail": "Téléphone ou email",
+  "phone": "Téléphone",
+  "email": "Email",
+  "password": "Mot de passe",
+  "forgotPassword": "Mot de passe oublié ?",
+  "fieldRequired": "Ce champ est obligatoire",
+  "invalidEmail": "Email invalide",
+
+  "registerInfoTitle": "Comment vous appelez-vous ?",
+  "registerInfoSubtitle": "Ces informations apparaîtront sur vos billets",
+  "lastName": "Nom",
+  "firstName": "Prénom",
+  "continueButton": "Continuer",
+  "back": "Retour",
+
+  "registerPhoneTitle": "Comment peut-on vous joindre ?",
+  "registerPhoneSubtitle": "Le téléphone est obligatoire, l'email est optionnel",
+  "emailOptional": "Email (optionnel)",
+
+  "registerPasswordTitle": "Créez votre mot de passe",
+  "registerPasswordSubtitle": "Au moins 6 caractères",
+  "confirmPassword": "Confirmer le mot de passe",
+  "passwordsDontMatch": "Les mots de passe ne correspondent pas",
+
+  "verifyTitle": "Entrez le code reçu",
+  "resendCode": "Renvoyer le code",
+  "verifyButton": "Vérifier",
+
+  "accountCreatedTitle": "Compte créé !",
+  "accountCreatedSubtitle": "Ton compte a bien été vérifié.\nTu peux maintenant te connecter.",
+
+  "navHome": "Accueil",
+  "navReservations": "Réservations",
+  "navMessages": "Messages",
+  "navProfile": "Profil",
+
+  "searchDeparture": "Ville de départ",
+  "searchArrival": "Ville d'arrivée",
+  "searchDate": "Date (optionnel)",
+  "searchAllDates": "Toutes les dates",
+  "searchButton": "Rechercher",
+  "noTripFound": "Aucun trajet trouvé",
+  "tryOtherCity": "Essaie une autre ville ou une autre date",
+  "findYourTrip": "Trouve ton prochain trajet",
+  "enterDestination": "Indique ta destination pour voir les trajets disponibles",
+  "comingSoon": "Bientôt disponible",
+
+  "noReservationYet": "Aucune réservation pour le moment",
+  "ticketsWillAppear": "Ton historique de billets apparaîtra ici",
+  "confirmed": "Confirmée",
+  "pending": "En attente",
+
+  "noNotificationYet": "Pas encore de notification",
+  "alertsWillAppear": "Confirmations et alertes apparaîtront ici",
+
+  "myAccount": "Mon compte",
+  "settings": "Paramètres",
+  "logout": "Se déconnecter",
+  "logoutConfirm": "Tu devras te reconnecter pour accéder à ton compte.",
+  "cancel": "Annuler",
+
+  "personalInfo": "Informations personnelles",
+  "security": "Sécurité",
+  "paymentMethods": "Moyens de paiement",
+  "myReviews": "Mes avis",
+  "favorites": "Favoris",
+
+  "language": "Langue",
+  "notificationPrefs": "Préférences de notifications",
+  "helpSupport": "Aide & support",
+  "termsOfUse": "Conditions d'utilisation",
+  "privacyPolicy": "Politique de confidentialité",
+  "about": "À propos",
+  "deleteAccount": "Supprimer mon compte",
+  "greeting" : "Bienvenue",
+  "noCharge" : "Impossible de Charger"
+}
