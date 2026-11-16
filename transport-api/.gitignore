@@ -34,3 +34,4 @@ build/
 
 # Fichier contenant des secrets (BDD, JWT, Gmail)
 src/main/resources/application.properties
+/env.txt
